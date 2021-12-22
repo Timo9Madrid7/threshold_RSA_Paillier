@@ -1,0 +1,196 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# In[1]:
+
+
+from sympy import isprime
+import random
+import math 
+
+
+# In[2]:
+
+
+class ThresholdRSA():
+    def __init__(self, l: int, t: int):
+        '''
+        Inputs:
+        l: the number of nodes
+        t: threshold
+        ***------***
+        Outputs:
+        '''
+        self.l, self.t, = l, t
+
+        self.low, self.high = None, None
+        self.p_, self.q_ = None, None
+        self.p, self.q = None, None
+        self.m, self.n = None, None
+        self.e, self.d = None, None
+        self.sk_i, self.vk, self.vk_i = [], None, []
+
+    def initSetUp(self, low: int, high: int):
+        '''
+        Inputs:
+        [low, high): searching range of strong primes
+        ***------***
+        Outputs:
+        Boolean Indicator
+        '''
+        self.p_, self.q_ = self.findStrongPrimes(low, high)
+        if self.p_ != None and self.q_ != None:
+            self.p, self.q = 2 * self.p_ + 1, 2 * self.q_ + 1
+            self.n, self.m = self.p * self.q, self.p_ * self.q_
+
+            self.e = random.choice(range(self.l + 1, self.m))
+            while (not isprime(self.e)):
+                self.e = random.choice(range(self.l + 1, self.m))
+            self.d = self.multiInverse(self.e, self.m)
+
+            self.sk_i = self.shamirSecrets()
+            self.vk, self.vk_i = self.proofShares()
+            return True
+        else:
+            return False
+
+    def encryptionStep(self, M: int):
+        '''
+        Inputs:
+        M: plaintext
+        ***------***
+        Outputs: 
+        ciphertext
+        '''
+        return pow(M, self.e, self.n)
+
+    def decryptionStep(self, c: int, valid_check=False):
+        '''
+        Inputs:
+        c: ciphertext
+        ***------***
+        Outputs: 
+        decrypted plaintext
+        '''
+        S = random.sample(range(1, self.l + 1), k=self.t + 1)
+        S.sort()
+
+        miu_0j = self.lagrangeCoef(S)
+
+        c_i = []
+        d_i = []
+        v_i = []
+        delta = math.factorial(self.l)
+        for i in S:
+            c_i.append(pow(c, 2 * delta * self.sk_i[i - 1], self.n))
+            d_i.append(self.sk_i[i - 1])
+            v_i.append(self.vk_i[i - 1])
+
+        if valid_check:
+            # change "malicious" to True if you want to test the validation
+            print("Validation Check", self.validProof(c, delta, c_i, v_i, d_i, malicious=False))
+
+        M_raw = 1
+        for i in range(len(S)):
+            M_raw *= pow(c_i[i], 2 * miu_0j[i], self.n)
+
+        _, a, b = self.gcdExtended(4 * delta**2, self.e)
+
+        return pow(M_raw, a, self.n) * pow(c, b, self.n) % self.n
+
+    def findStrongPrimes(self, low: int, high: int, size=2):
+        primes = []
+        for i in range(low, high):
+            if isprime(i) and isprime(2 * i + 1):
+                primes.append(i)
+                if len(primes) == size:
+                    return primes
+        RuntimeError('InvalidRange', 'cannot find two strong primes')
+        return None, None
+
+    def multiInverse(self, x: int, base: int):
+        return pow(x, -1, base)
+
+    def shamirSecrets(self):
+        f_i = [self.d] + random.choices(range(0, self.m), k=self.t)
+        sk_i = []
+        for x in range(1, self.l + 1):
+            d_i = 0
+            for i in range(0, self.t + 1):
+                d_i += f_i[i] * pow(x, i)
+            sk_i.append(d_i % self.m)
+        return sk_i
+
+    def proofShares(self):
+        Zn_star = [i for i in range(0, self.n) if math.gcd(i, self.n) == 1]
+        vk = random.choice(Zn_star)
+        vk_i = list(map(lambda x: pow(vk, x, self.n), self.sk_i))
+        return vk, vk_i
+
+    def lagrangeCoef(self, S: list):
+        delta = math.factorial(self.l)
+        miu_0j = []
+        for j in S:
+            numerator = 1
+            denominator = 1
+            for j_ in S:
+                if j_ == j:
+                    continue
+                numerator *= (0 - j_)
+                denominator *= (j - j_)
+            miu_0j.append(int(delta * numerator / denominator))
+        return miu_0j
+
+    def gcdExtended(self, a: int, b: int):
+        if a == 0:
+            return b, 0, 1
+        gcd, x1, y1 = self.gcdExtended(b % a, a)
+        x = y1 - (b // a) * x1
+        y = x1
+        return gcd, x, y
+
+    def validProof(self, c: int, delta: int, c_i: list, v_i: list, d_i: list, malicious=False):
+        '''
+        The validation process runs locally. This is not a rigorous proof,
+        but only a simulation since this is a toy example
+        '''
+        assert len(c_i) == len(v_i) and len(c_i) == len(d_i)
+        
+        Zn_star = [i for i in range(0, self.n) if math.gcd(i, self.n) == 1]
+        
+        if malicious:
+            c_i[random.randint(0,len(c_i)-1)] = pow(c, 2 * delta * random.choice(Zn_star), self.n)
+        
+        for j in range(len(c_i)):
+            r = random.choice(Zn_star)  # actually generated by the prover
+            x, x_ = pow(c, 4 * delta * r, self.n), pow(self.vk, r, self.n)
+            e = random.choice(
+                Zn_star)  # actually generated by the verifier (randomly!)
+            z = r + e * d_i[j]
+            if (pow(c, 4 * delta * z, self.n) == x * pow(c_i[j], 2 * e, self.n) % self.n
+                    and pow(self.vk, z, self.n) == x_ * pow(v_i[j], e, self.n) % self.n):
+                continue
+            else:
+                RuntimeError("InvalidProof",
+                             "index %d cannot pass validation" % (j))
+                return False
+        return True
+
+
+# In[3]:
+
+
+if __name__ == '__main__':
+    test = ThresholdRSA(10, 5)
+    indicator = test.initSetUp(50, 100)
+    if indicator:
+        c = test.encryptionStep(123)
+        m = test.decryptionStep(c, valid_check=True)
+        print(m)
+
+
+# In[ ]:
+
+
+
+
